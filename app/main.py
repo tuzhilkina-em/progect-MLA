@@ -1,5 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pathlib import Path
 import json
+
 from app.utils import add_to_json, get_last_code
 import random
 import logging
@@ -9,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 def generate_code() -> str:
     return str(random.randint(10_000_000, 99_999_999))
@@ -51,3 +56,48 @@ def list_codes():
         return json.loads(get_json_path().read_text(encoding='utf-8'))
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+
+
+@app.post("/generate")
+async def generate_from_form(
+        code: str = Form(...)
+):
+    last_code = get_last_code()
+    if code != last_code:
+        return {"status": "error", "message": "Invalid code!"}
+
+    add_to_json(code)
+
+    response_data = {
+        "status": "success",
+        "code": code,
+        "match": code == last_code,
+        "source": "form",
+        "message": "welcome to hell"
+    }
+
+    return response_data
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
+
+@app.post("/login")
+async def handle_login(
+        request: Request,
+        code: str = Form(...)
+):
+
+    message = "Data received successfully!"
+    status = "success"
+
+    return templates.TemplateResponse(
+        "login.html",
+        {
+            "request": request,
+            "message": message,
+            "status": status,
+        }
+    )
