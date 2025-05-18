@@ -1,103 +1,117 @@
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, Form, Depends, HTTPException, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
 import json
-
-from app.utils import add_to_json, get_last_code
 import random
 import logging
+import time
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "fXtn66xuno"
+CODE_TTL_MINUTES = 3
+
 
 app = FastAPI()
-
+security = HTTPBasic()
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
-def generate_code() -> str:
-    return str(random.randint(10_000_000, 99_999_999))
+
+codes_db: List[Dict] = []
 
 
-@app.get("/generate")
-async def generate_page():
-    new_code = generate_code()
-    logger.info(f"Generated code: {new_code}")
+def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    if credentials.username != ADMIN_USERNAME or credentials.password != ADMIN_PASSWORD:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
 
-    add_to_json(new_code)
-    last_code = get_last_code()
 
-    if new_code == last_code:
-        logger.info("Codes match! Returning welcome message")
-        return {
-            "status": "success",
-            "message": "welcome to hell",
-            "code": new_code,
-            "match": True
-        }
+def cleanup_expired_codes():
+    global codes_db
+    now = datetime.now()
+    codes_db = [code for code in codes_db
+                if now - code["created_at"] < timedelta(minutes=CODE_TTL_MINUTES)]
 
-    return {
-        "status": "success",
-        "message": "new code generated",
+
+def get_valid_codes():
+    cleanup_expired_codes()
+    return [code["code"] for code in codes_db]
+
+
+@app.get("/admin/codes")
+async def admin_codes(_: str = Depends(verify_admin)):
+    return {"codes": codes_db}
+
+
+@app.get("/admin/generate")
+async def admin_generate(_: str = Depends(verify_admin)):
+    new_code = str(random.randint(10_000_000, 99_999_999))
+    codes_db.append({
         "code": new_code,
-        "match": False
-    }
+        "created_at": datetime.now(),
+        "expires_at": datetime.now() + timedelta(minutes=CODE_TTL_MINUTES)
+    })
+    return {"status": "success", "code": new_code}
 
 
-@app.get("/")
-def home():
-    return {"message": "welcome to hell"}
-
-
-@app.get("/codes")
-def list_codes():
-    from app.utils import get_json_path
-    try:
-        return json.loads(get_json_path().read_text(encoding='utf-8'))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-
-
-@app.post("/generate")
-async def generate_from_form(
-        code: str = Form(...)
-):
-    last_code = get_last_code()
-    if code != last_code:
-        return {"status": "error", "message": "Invalid code!"}
-
-    add_to_json(code)
-
-    response_data = {
-        "status": "success",
-        "code": code,
-        "match": code == last_code,
-        "source": "form",
-        "message": "welcome to hell"
-    }
-
-    return response_data
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return RedirectResponse(url="/login")
 
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
-
-
-@app.post("/login")
-async def handle_login(
-        request: Request,
-        code: str = Form(...)
-):
-
-    message = "Data received successfully!"
-    status = "success"
-
     return templates.TemplateResponse(
         "login.html",
         {
             "request": request,
-            "message": message,
-            "status": status,
+            "valid_codes": get_valid_codes(),
+            "ttl_minutes": CODE_TTL_MINUTES
         }
     )
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def handle_login(
+        request: Request,
+        code: str = Form(...)
+):
+    valid_codes = get_valid_codes()
+
+    if code not in valid_codes:
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "message": "Invalid or expired code",
+                "status": "error",
+                "valid_codes": valid_codes,
+                "ttl_minutes": CODE_TTL_MINUTES
+            }
+        )
+
+    return templates.TemplateResponse(
+        "welcome.html",
+        {
+            "request": request,
+            "code": code
+        }
+    )
+
+@app.get("/welcome", response_class=HTMLResponse)
+async def welcome_page(request: Request):
+    return RedirectResponse(url="/login")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)

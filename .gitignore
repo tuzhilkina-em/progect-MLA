@@ -1,6 +1,62 @@
 __pycache__/
 *.py[cod]
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
 
+# Virtual environment
 venv/
+.venv/
+env/
+.env/
 
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Data files
 data.json
+*.db
+*.sqlite
+*.dump
+
+# FastAPI specific
+.dmypy.json
+dmypy.json
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Project specific
+/app/static/images/photo_2025-05-18_19-28-22.jpg  # если хотите исключить конкретное изображение
+/app/data.json  # исключаем файл с кодами
