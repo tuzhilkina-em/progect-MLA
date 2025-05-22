@@ -1,16 +1,30 @@
 [project]
-name = "progect-mla"
+name = "project-MLA"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "Tuzhilkina Elizaveta",email = "1lmd.g6@gmail.com"}
+    {name = "Tuzhilkina Elizaveta", email = "1lmd.g6@gmail.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.95.0",
+    "uvicorn>=0.21.0",
+    "loguru>=0.7.0",
+    "pydantic-settings>=2.0.0",
+    "jinja2 (>=3.1.6,<4.0.0)",
+    "python-multipart (>=0.0.20,<0.0.21)"
 ]
 
-
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
+requires = ["poetry-core>=2.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py312']
+
+[tool.poetry]
+packages = [
+    { include = "app" }
+]

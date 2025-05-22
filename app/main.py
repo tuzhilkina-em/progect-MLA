@@ -3,115 +3,133 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
-import json
 import random
-import logging
-import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import List
+import logging
+from loguru import logger
+
+from config import settings
+from app.utils import CodeManager
 
 
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "fXtn66xuno"
-CODE_TTL_MINUTES = 3
+def _configure_logging():
+    logger.add("app.log", rotation="10 MB", level="INFO")
 
 
-app = FastAPI()
-security = HTTPBasic()
-templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-
-
-codes_db: List[Dict] = []
-
-
-def verify_admin(credentials: HTTPBasicCredentials = Depends(security)):
-    if credentials.username != ADMIN_USERNAME or credentials.password != ADMIN_PASSWORD:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
-
-
-def cleanup_expired_codes():
-    global codes_db
-    now = datetime.now()
-    codes_db = [code for code in codes_db
-                if now - code["created_at"] < timedelta(minutes=CODE_TTL_MINUTES)]
-
-
-def get_valid_codes():
-    cleanup_expired_codes()
-    return [code["code"] for code in codes_db]
-
-
-@app.get("/admin/codes")
-async def admin_codes(_: str = Depends(verify_admin)):
-    return {"codes": codes_db}
-
-
-@app.get("/admin/generate")
-async def admin_generate(_: str = Depends(verify_admin)):
-    new_code = str(random.randint(10_000_000, 99_999_999))
-    codes_db.append({
-        "code": new_code,
-        "created_at": datetime.now(),
-        "expires_at": datetime.now() + timedelta(minutes=CODE_TTL_MINUTES)
-    })
-    return {"status": "success", "code": new_code}
-
-
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
+async def home():
     return RedirectResponse(url="/login")
 
 
-@app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
-    return templates.TemplateResponse(
-        "login.html",
-        {
-            "request": request,
-            "valid_codes": get_valid_codes(),
-            "ttl_minutes": CODE_TTL_MINUTES
-        }
-    )
+async def welcome_page():
+    return RedirectResponse(url="/login")
 
 
-@app.post("/login", response_class=HTMLResponse)
-async def handle_login(
-        request: Request,
-        code: str = Form(...)
-):
-    valid_codes = get_valid_codes()
+class FastAPIApp:
+    def __init__(self):
+        self.app = FastAPI()
+        self.templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+        self.code_manager = CodeManager()
+        self.security = HTTPBasic()
+        self._setup_routes()
+        _configure_logging()
 
-    if code not in valid_codes:
-        return templates.TemplateResponse(
+    def _setup_routes(self):
+        self.app.get("/")(home)
+        self.app.get("/login", response_class=HTMLResponse)(self.login_page)
+        self.app.post("/login", response_class=HTMLResponse)(self.handle_login)
+        self.app.get("/welcome", response_class=HTMLResponse)(welcome_page)
+
+        self.app.get("/admin", response_class=HTMLResponse)(self.admin_page)
+        self.app.get("/admin/codes")(self.admin_codes)
+        self.app.get("/admin/generate")(self.admin_generate)
+
+    async def login_page(self, request: Request):
+        return self.templates.TemplateResponse(
             "login.html",
             {
                 "request": request,
-                "message": "Invalid or expired code",
-                "status": "error",
-                "valid_codes": valid_codes,
-                "ttl_minutes": CODE_TTL_MINUTES
+                "valid_codes": self.code_manager.get_all_codes(),
+                "ttl_minutes": settings.CODE_TTL_MINUTES
             }
         )
 
-    return templates.TemplateResponse(
-        "welcome.html",
-        {
-            "request": request,
-            "code": code
-        }
-    )
+    async def handle_login(self, request: Request, code: str = Form(...)):
+        if not self.code_manager.is_valid_code(code):
+            return self.templates.TemplateResponse(
+                "login.html",
+                {
+                    "request": request,
+                    "message": "Invalid or expired code",
+                    "status": "error",
+                    "valid_codes": self.code_manager.get_all_codes(),
+                    "ttl_minutes": settings.CODE_TTL_MINUTES
+                }
+            )
 
-@app.get("/welcome", response_class=HTMLResponse)
-async def welcome_page(request: Request):
-    return RedirectResponse(url="/login")
+        logger.info(f"User logged in with code: {code}")
+        return self.templates.TemplateResponse(
+            "welcome.html",
+            {
+                "request": request,
+                "code": code
+            }
+        )
 
+    def _verify_admin(self, credentials: HTTPBasicCredentials = Depends(HTTPBasic())):
+        """Проверка логина и пароля администратора."""
+        if (credentials.username != settings.ADMIN_USERNAME or
+            credentials.password != settings.ADMIN_PASSWORD):
+            logger.warning(f"Failed admin login attempt: {credentials.username}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect credentials",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+        return credentials.username
+
+    def _admin_dependency(self):
+        async def dep(credentials: HTTPBasicCredentials = Depends(HTTPBasic())):
+            return self._verify_admin(credentials)
+
+        return Depends(dep)
+
+    def _setup_routes(self):
+        self.app.get("/")(home)
+        self.app.get("/login", response_class=HTMLResponse)(self.login_page)
+        self.app.post("/login", response_class=HTMLResponse)(self.handle_login)
+        self.app.get("/welcome", response_class=HTMLResponse)(welcome_page)
+
+        # Защищенные маршруты (используют Depends)
+        self.app.get("/admin", response_class=HTMLResponse)(self._create_admin_route(self.admin_page))
+        self.app.get("/admin/codes")(self._create_admin_route(self.admin_codes))
+        self.app.get("/admin/generate")(self._create_admin_route(self.admin_generate))
+
+    def _create_admin_route(self, endpoint):
+        """Обертка для маршрутов, требующих авторизации."""
+        async def wrapper(request: Request = None, username: str = Depends(self._verify_admin)):
+            return await endpoint(request) if request else await endpoint()
+        return wrapper
+
+    async def admin_page(self, request: Request):
+        return self.templates.TemplateResponse(
+            "admin.html",
+            {"request": request, "username": "admin"}  # username можно получить из Depends
+        )
+
+    async def admin_codes(self, username: str = Depends(_admin_dependency)):
+        return {"codes": self.code_manager.get_all_codes()}
+
+    async def admin_generate(self, username: str = Depends(_admin_dependency)):
+        new_code = self.code_manager.generate_code()
+        logger.info(f"Admin generated new code: {new_code}")
+        return {"status": "success", "code": new_code}
+
+
+
+app_instance = FastAPIApp()
+app = app_instance.app
 
 if __name__ == "__main__":
     import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=settings.APP_HOST, port=settings.APP_PORT)
